@@ -33,9 +33,33 @@ uint8_t fifoBuffer[64]; // FIFO storage buffer
 const int sensor_0 = 10; //pin for ultrasound sensor 1
 const int sensor_1 = 11; //pin for ultrasound sensor 2
 const int MAX_DISTANCE = 200; //maximum range (in cm) for ultrasound
+const int MIN_DISTANCE = 10; //distance in cm at which the robot should turn around
 
 NewPing front_sonar(sensor_0, sensor_0, MAX_DISTANCE); //forward ultrasound sensor
 NewPing back_sonar(sensor_1, sensor_1, MAX_DISTANCE);  //reverse ultrasound sensor
+
+//Pressure Plates-TODO
+const int pFront = 0;
+const int pBack = 0;
+const int pLeft = 0;
+const int pRight = 0;
+
+//Drive control variables
+bool forward;
+double velocity;
+
+//PID coefficients for driving straight
+const double p_s = 1.0;
+const double i_s = 0.0;
+const double d_s = 1.0;
+//PID coefficients for turns
+const double p_t = 1.0;
+const double i_t = 0.0;
+const double d_t = 1.0;
+//PID control values
+double set, in, out;
+PID pid_s(&set, &in, &out, p_s, i_s, d_s, DIRECT);
+PID pid_t(&set, &in, &out, p_t, i_t, d_t, DIRECT);
 
 void driveSetup(){
   //Set all drive pins to output
@@ -45,6 +69,9 @@ void driveSetup(){
   pinMode(R_Direx2, OUTPUT);
   pinMode(L_Speed, OUTPUT);
   pinMode(R_Speed, OUTPUT);
+
+  forward = true;
+  velocity = 0.7;
 }
 
 void killSetup(){
@@ -62,10 +89,6 @@ void mpuSetup() {
         Fastwire::setup(400, true);
     #endif
 
-    // initialize serial communication
-    // (115200 chosen because it is required for Teapot Demo output, but it's
-    // really up to you depending on your project)
-    Serial.begin(115200);
     while (!Serial); // wait for Leonardo enumeration, others continue immediately
 
     // NOTE: 8MHz or slower host processors, like the Teensy @ 3.3v or Ardunio
@@ -126,7 +149,13 @@ void mpuSetup() {
     }
 }
 
+void pidSetup(){
+  pid_t.SetMode(AUTOMATIC);
+  pid_s.SetMode(AUTOMATIC);
+}
+
 void setup() {
+  Serial.begin(115200);
   driveSetup();
   killSetup();
   mpuSetup();
@@ -227,10 +256,50 @@ void driveDuration(double left, double right, double seconds){
   driveTank(0,0);
 }
 
+void turn(bool isReversed){
+  const double GOOD_DIF = 0.1;
+  
+  set = (45.0 * (isReversed? -1.0 : 1.0)) + readYaw();
+  in = readYaw();
+  
+  while(abs(set-out)>GOOD_DIF){
+    pid_t.compute();
+    driveTank(out,-out);
+  }
+}
+
 void loop() {
-  if(!E-STOPPED){ 
-    //Main loop code here 
-    
+  if(!E-STOPPED){
+    //If any of the buttons are being triggered, turn away from that direction
+    //If ultrasound in the direction of movement is too close, turn around
+    //Then, just drive straight
+
+    //Turn at side collision
+    if(digitalRead(pLeft)==LOW){
+      turn(!forward);
+    }
+    if(digitalRead(pRight)==LOW){
+      turn(forward);
+    }
+
+    //Change direction at fron/back interaction
+    if(front_sonar.ping_cm()<MIN_DISTANCE
+       ||digitalRead(pFront)==LOW){
+      forward = false;
+    }
+    if(back_sonar.ping_cm()<MIN_DISTANCE
+       ||digitalRead(pBack)==LOW){
+      forward = true;
+    }
+
+    //Drive straight
+    set = in = readYaw();
+    velocity = forward? abs(velocity) : -abs(velocity);
+    pid_s.compute();
+    driveTank(velocity + out, velocity - out);    
+   
+  }else{
+    Serial.println("EMERGENCY STOPPED: Restart Robot");
   }
   
   if(digitalRead(kill_pin)==LOW){
