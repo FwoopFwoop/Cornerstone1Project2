@@ -20,7 +20,7 @@ const int R_Speed = 9;            // pin sets speed of right motor, connected to
 
 //Motion Processing Unit
 MPU6050 mpu; //mpu object itself
-const double MPU_FAIL = -12345.6789; //arbitrary value to identify gyro failure
+const int MPU_FAIL = 271828; //arbitrary value to identify gyro failure
 
 // MPU control/status vars
 bool dmpReady = false;  // set true if DMP init was successful
@@ -49,7 +49,7 @@ const int pRight = 3;
 
 //Drive control variables
 bool forward; //Stores whether or not the robot is going forward
-double velocity; //Stores the target speed of the robot
+int velocity; //Stores the target speed of the robot
 int lastReading; //System time in milliseconds of the last gyro reading
 bool isClear; //Stores if the robot is already moving along a straight path
 int lastUpdate; //Stores the last time the robot told the serial its status
@@ -65,7 +65,7 @@ const double d_t = 0.0;
 //PID control values
 double set, in, out;
 PID pid_s(&set, &in, &out, p_s, i_s, d_s, DIRECT);
-PID pid_t(&set, &in, &out, p_t, i_t, d_t, DIRECT);
+PID pid_t(&set, &in, &out, p_t, i_t, d_t, DIRECT);  
 
 
 void driveSetup(){
@@ -78,7 +78,7 @@ void driveSetup(){
   pinMode(R_Speed, OUTPUT);
 
   forward = true; //robot should start moving forward
-  velocity = 0.7; //base forward velocity (not maxed out so that PID has room to change values)
+  velocity = 179; //base forward velocity (not maxed out so that PID has room to change values)
   lastReading = 0; //Ensures that a gyro reading will be taken at the first opportunity
   lastUpdate = 0; //Ensures that the user will be updated at the earliest opportunity
   isClear = false; //Tells the robot that on startup, it needs to begin a new forward trajectory
@@ -242,7 +242,7 @@ double readYaw(){
     return MPU_FAIL;
 }
  
-void driveTank(double left, double right){
+void driveTank(int left, int right){
   //Set direction
   if(left>0){
     digitalWrite(L_Direx1, HIGH);
@@ -259,9 +259,9 @@ void driveTank(double left, double right){
     digitalWrite(R_Direx2, HIGH);
   }
 
-  //Convert % power to a range 0-255
-  left = abs(left) * 255.0;
-  right = abs(right) * 255.0;
+  //Make value positive
+  left = abs(left);
+  right = abs(right);
 
   //Drive the motors
   analogWrite(L_Speed, left); 
@@ -286,9 +286,10 @@ bool isPressed(int buttonPin){
 }
 
 void turn(bool isReversed){
+  //TODO!!! Wut
   const double GOOD_DIF = 0.1;
   
-  set = (45.0 * (isReversed? -1.0 : 1.0)) + readYaw();
+  set = (45.0 * (isReversed? -255 : 255)) + readYaw();
   in = readYaw();
   
   while(abs(set-out)>GOOD_DIF){
@@ -330,22 +331,28 @@ void loop() {
     if(!isClear){
       set = readYaw();
     }
-    
+
+    /*
     //Update the gyro every half second
     int currentTime = millis();
     if(currentTime - lastReading>500){
       in = readYaw();
       lastReading = currentTime;
     }
+    */
+    
+    //Update the gyro reading
+    in = readYaw();
     
     velocity = forward? abs(velocity) : -abs(velocity);
     pid_s.Compute();
-    double left = velocity + out;
-    double right = velocity - out;
+    int left = velocity + out;
+    int right = velocity - out;
     
     driveTank(left, right);    
 
     //Update the serial with drive status every second
+    int currentTime = millis();
     if(currentTime - lastUpdate>1000){
       Serial.print("Driving with power ");
       Serial.print("("+String(left)+", "+String(right)+")"); //=> "(%left, %right)"
