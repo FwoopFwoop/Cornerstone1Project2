@@ -10,12 +10,12 @@ const int kill_delay = 10; //Number of milliseconds the kill button must be held
 bool E_STOPPED; //Stores wether the robot has been disabled by the kill switch
 
 //Drive
-const int L_Direx1 = 3;            // pin sets direction of left motor, connected to A-In1/Phase
-const int L_Direx2 = 4;            // pin sets direction of left motor, connected to A-In2/Phase
-const int L_Speed = 5;            // pin sets speed of left motor, connected to A-In2/Enable
-const int R_Direx1 = 7;            // pin sets direction of right motor, connected to B-In1/Phase
-const int R_Direx2 = 8;            // pin sets direction of left motor, connected to B-In2/Phase
-const int R_Speed = 9;            // pin sets speed of right motor, connected to B-In2/Enable
+const int L_Direx1 = 3;  // pin sets direction of left motor, connected to A-In1/Phase
+const int L_Direx2 = 4;  // pin sets direction of left motor, connected to A-In2/Phase
+const int L_Speed = 5;   // pin sets speed of left motor, connected to A-In2/Enable
+const int R_Direx1 = 7;  // pin sets direction of right motor, connected to B-In1/Phase
+const int R_Direx2 = 8;  // pin sets direction of left motor, connected to B-In2/Phase
+const int R_Speed = 9;   // pin sets speed of right motor, connected to B-In2/Enable
 
 
 //Motion Processing Unit
@@ -31,21 +31,26 @@ uint16_t fifoCount;     // count of all bytes currently in FIFO
 uint8_t fifoBuffer[64]; // FIFO storage buffer
 volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin has gone high
 void dmpDataReady() {mpuInterrupt = true;}
+Quaternion q;           // [w, x, y, z]         quaternion container
+VectorFloat gravity;    // [x, y, z]            gravity vector
+float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
 
 //Ultrasound
 const int sensor_0 = 10; //pin for ultrasound sensor 1
-const int sensor_1 = 11; //pin for ultrasound sensor 2
+const int sensor_0a =11;  //pin for ultrasound sensor 1
+const int sensor_1 = 12; //pin for ultrasound sensor 2
+const int sensor_1a =13; //pin for ultrasound sensor 2
 const int MAX_DISTANCE = 200; //maximum range (in cm) for ultrasound
-const int MIN_DISTANCE = 10; //distance in cm at which the robot should turn around
+const int MIN_DISTANCE = 20; //distance in cm at which the robot should turn around
 
-NewPing front_sonar(sensor_0, sensor_0, MAX_DISTANCE); //forward ultrasound sensor
-NewPing back_sonar(sensor_1, sensor_1, MAX_DISTANCE);  //reverse ultrasound sensor
+NewPing front_sonar(sensor_0a, sensor_0, MAX_DISTANCE); //forward ultrasound sensor
+NewPing back_sonar(sensor_1a, sensor_1, MAX_DISTANCE);  //reverse ultrasound sensor
 
-//Pressure Plates 
-const int pFront = 0;
-const int pBack = 1;
-const int pLeft = 2;
-const int pRight = 3;
+//Pressure Plates -the first number represents the analog pin, the +14 makes them digital
+const int pFront = 1 +14;
+const int pBack = 0 +14;
+const int pLeft = 2 +14;
+const int pRight = 3 +14;
 
 //Drive control variables
 bool forward; //Stores whether or not the robot is going forward
@@ -55,9 +60,9 @@ bool isClear; //Stores if the robot is already moving along a straight path
 int lastUpdate; //Stores the last time the robot told the serial its status
 
 //PID coefficients for driving straight
-const double p_s = 1.0;
-const double i_s = 0.0;
-const double d_s = 0.0;
+const double p_s = 10000.0;
+const double i_s = 10000.0;
+const double d_s = 10000.0;
 //PID coefficients for turns
 const double p_t = 1.0;
 const double i_t = 0.0;
@@ -66,7 +71,6 @@ const double d_t = 0.0;
 double set, in, out;
 PID pid_s(&set, &in, &out, p_s, i_s, d_s, DIRECT);
 PID pid_t(&set, &in, &out, p_t, i_t, d_t, DIRECT);  
-
 
 void driveSetup(){
   //Set all drive pins to output
@@ -81,11 +85,15 @@ void driveSetup(){
   velocity = 179; //base forward velocity (not maxed out so that PID has room to change values)
   lastReading = 0; //Ensures that a gyro reading will be taken at the first opportunity
   lastUpdate = 0; //Ensures that the user will be updated at the earliest opportunity
-  isClear = false; //Tells the robot that on startup, it needs to begin a new forward trajectory
+  isClear = true; //Stores if the robot is moving forward unobstructed
 }
 
-void killSetup(){
+void buttonSetup(){
   pinMode(kill_pin, INPUT);
+  pinMode(pFront, INPUT);
+  pinMode(pBack, INPUT);
+  pinMode(pLeft, INPUT);
+  pinMode(pRight, INPUT);
   E_STOPPED = false;  
 }
 
@@ -162,47 +170,49 @@ void mpuSetup() {
 }
 
 void pidSetup(){
+
+  in = readYaw();
+  set = 0;
+  out = 1.0;
+  
   pid_t.SetMode(AUTOMATIC);
   pid_s.SetMode(AUTOMATIC);
+
+  pid_s.SetSampleTime(100);
+
+  pid_t.SetOutputLimits(-255,255);
+  pid_s.SetOutputLimits(-76,76);
+  
 }
 
 void setup() {
   Serial.begin(115200);
   Serial.println("Setting up drive");
   driveSetup();
-  Serial.println("Setting up e-stop");
-  killSetup();
+  Serial.println("Setting up buttons");
+  buttonSetup();
   Serial.println("Setting up MPU");
-  mpuSetup();
+  //TODO mpuSetup();
   
   //Delay 10 seconds for gyro to stabilize
   
-  for(int i = 0; i<10; i++){
+  /*for(int i = 0; i<10; i++){
     Serial.println("Robot will move in " + String(10-i) + " seconds");
     delay(1000);
-  }
+  }*/
 
   Serial.println("Starting!");
+  pidSetup(); //Must occur after gyro setup for setpoint initialization
+  Serial.println("PID Started");
 }
 
 //Uses code provided with the MPU6050 examples
-double readYaw(){
+float readYaw(){
   // if programming failed, don't try to do anything
     if (!dmpReady) return;
 
     // wait for MPU interrupt or extra packet(s) available
-    while (!mpuInterrupt && fifoCount < packetSize) {
-        // other program behavior stuff here
-        // .
-        // .
-        // .
-        // if you are really paranoid you can frequently test in between other
-        // stuff to see if mpuInterrupt is true, and if so, "break;" from the
-        // while() loop to immediately process the MPU data
-        // .
-        // .
-        // .
-    }
+    while (!mpuInterrupt && fifoCount < packetSize){}
 
     // reset interrupt flag and get INT_STATUS byte
     mpuInterrupt = false;
@@ -230,13 +240,11 @@ double readYaw(){
         fifoCount -= packetSize;
         
         //Output yaw reading
-        Quaternion q;           // [w, x, y, z]         quaternion container
-        VectorFloat gravity;    // [x, y, z]            gravity vector
-        float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
         mpu.dmpGetQuaternion(&q, fifoBuffer);
         mpu.dmpGetGravity(&gravity, &q);
         mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
-        return ypr[0];
+
+        return ypr[0]* 180/M_PI;
     }
     //If no yaw was calculated, return a failure indicating value
     return MPU_FAIL;
@@ -268,23 +276,6 @@ void driveTank(int left, int right){
   analogWrite(R_Speed, right); 
 }
 
-void wait(double seconds){
-  delay(seconds * 1000);
-}
-
-void driveDuration(double left, double right, double seconds){
-  driveTank(left, right);
-  
-  wait(seconds);
-  
-  driveTank(0,0);
-}
-
-bool isPressed(int buttonPin){
-  //TODO!!!: Make sure this is good
-  analogRead(buttonPin) > 10;
-}
-
 void turn(bool isReversed){
   //TODO!!! Wut
   const double GOOD_DIF = 0.1;
@@ -293,7 +284,7 @@ void turn(bool isReversed){
   in = readYaw();
   
   while(abs(set-out)>GOOD_DIF){
-    pid_t.Compute();
+    //pid_t.Compute();
     driveTank(out,-out);
   }
 }
@@ -304,45 +295,47 @@ void loop() {
     //If ultrasound in the direction of movement is too close, turn around
     //Then, just drive straight
 
-    /* TODO- test and configure ultrasound, buttons, turning
+    //TODO- test and configure ultrasound, buttons, turning
     
     //Turn at side collision
-    if(isPressed(pLeft)){
-      turn(!forward);
+    if(digitalRead(pLeft)==LOW){ 
+      //turn(!forward);
+      Serial.println("LEFT COLLIDE");
+      isClear = false;
     }
-    if(isPressed(pRight)){
-      turn(forward);
+    if(digitalRead(pRight)==LOW){
+      //turn(forward);
+      Serial.println("RIGHT COLLIDE");
+      isClear=false;
     }
     
-
-    //Change direction at fron/back interaction
+    //Change direction at front/back interaction
     if(front_sonar.ping_cm()<MIN_DISTANCE
-       ||isPressed(pFront)){
+       ||digitalRead(pFront)==LOW){
+      Serial.println("FRONT COLLIDE");
       forward = false;
     }
     if(back_sonar.ping_cm()<MIN_DISTANCE
-       ||isPressed(pBack)){
+       ||digitalRead(pBack)==LOW){
+      Serial.println("BACK COLIDE");
       forward = true;
     }
     
-    */
+    
 
     //Drive straight
+
+    //If we just started going straight, store the current angle as the target
+    /*
     if(!isClear){
       set = readYaw();
-    }
-
-    /*
-    //Update the gyro every half second
-    int currentTime = millis();
-    if(currentTime - lastReading>500){
-      in = readYaw();
-      lastReading = currentTime;
+      isClear = true;
     }
     */
     
     //Update the gyro reading
-    in = readYaw();
+    double angle = readYaw();
+    in = angle;
     
     velocity = forward? abs(velocity) : -abs(velocity);
     pid_s.Compute();
@@ -351,19 +344,19 @@ void loop() {
     
     driveTank(left, right);    
 
-    //Update the serial with drive status every second
+    //Update the serial with drive status every 2 seconds
     int currentTime = millis();
-    if(currentTime - lastUpdate>1000){
-      Serial.print("Driving with power ");
+    if(currentTime - lastUpdate > 2000){
+      /*Serial.print("Driving with power ");
       Serial.print("("+String(left)+", "+String(right)+")"); //=> "(%left, %right)"
-      Serial.println("With angle "+String(in)+" and target "+String(set));
+      Serial.println("With angle "+String(angle)+" and target "+String(angle));
+      Serial.println("Offset! " + String(out));*/
     }
    
   }else{
     Serial.println("EMERGENCY STOPPED: Restart Robot");
   }
 
-  /* TODO- Connect and test E-Stop
   
   if(digitalRead(kill_pin)==LOW){
     delay(kill_delay);
@@ -372,5 +365,4 @@ void loop() {
     }
   }
 
-  */
 }
