@@ -1,4 +1,3 @@
-#include <PID_v1.h> //PID control library
 #include <NewPing.h> //Ultrasound library
 #include <I2Cdev.h> //IC2 Bus library (gyro)
 #include <MPU6050_6Axis_MotionApps20.h> //gyro library
@@ -41,7 +40,7 @@ const int sensor_0a =11;  //pin for ultrasound sensor 1
 const int sensor_1 = 12; //pin for ultrasound sensor 2
 const int sensor_1a =13; //pin for ultrasound sensor 2
 const int MAX_DISTANCE = 200; //maximum range (in cm) for ultrasound
-const int MIN_DISTANCE = 20; //distance in cm at which the robot should turn around
+const int MIN_DISTANCE = 25; //distance in cm at which the robot should turn around
 
 NewPing front_sonar(sensor_0a, sensor_0, MAX_DISTANCE); //forward ultrasound sensor
 NewPing back_sonar(sensor_1a, sensor_1, MAX_DISTANCE);  //reverse ultrasound sensor
@@ -54,23 +53,13 @@ const int pRight = 3 +14;
 
 //Drive control variables
 bool forward; //Stores whether or not the robot is going forward
-int velocity; //Stores the target speed of the robot
-int lastReading; //System time in milliseconds of the last gyro reading
-bool isClear; //Stores if the robot is already moving along a straight path
+bool turning;
+int turnStart;
 int lastUpdate; //Stores the last time the robot told the serial its status
 
-//PID coefficients for driving straight
-const double p_s = 10000.0;
-const double i_s = 10000.0;
-const double d_s = 10000.0;
-//PID coefficients for turns
-const double p_t = 1.0;
-const double i_t = 0.0;
-const double d_t = 0.0;
-//PID control values
-double set, in, out;
-PID pid_s(&set, &in, &out, p_s, i_s, d_s, DIRECT);
-PID pid_t(&set, &in, &out, p_t, i_t, d_t, DIRECT);  
+
+const int vRight = 200;
+const int vLeft = 200;
 
 void driveSetup(){
   //Set all drive pins to output
@@ -82,10 +71,8 @@ void driveSetup(){
   pinMode(R_Speed, OUTPUT);
 
   forward = true; //robot should start moving forward
-  velocity = 179; //base forward velocity (not maxed out so that PID has room to change values)
-  lastReading = 0; //Ensures that a gyro reading will be taken at the first opportunity
-  lastUpdate = 0; //Ensures that the user will be updated at the earliest opportunity
-  isClear = true; //Stores if the robot is moving forward unobstructed
+  turning = false;
+  turnStart = 0;
 }
 
 void buttonSetup(){
@@ -122,14 +109,6 @@ void mpuSetup() {
     // verify connection
     Serial.println(F("Testing device connections..."));
     Serial.println(mpu.testConnection() ? F("MPU6050 connection successful") : F("MPU6050 connection failed"));
-
-    /*
-    // wait for ready
-    Serial.println(F("\nSend any character to begin DMP programming and demo: "));
-    while (Serial.available() && Serial.read()); // empty buffer
-    while (!Serial.available());                 // wait for data
-    while (Serial.available() && Serial.read()); // empty buffer again
-    */
 
     // load and configure the DMP
     Serial.println(F("Initializing DMP..."));
@@ -169,41 +148,25 @@ void mpuSetup() {
     }
 }
 
-void pidSetup(){
-
-  in = readYaw();
-  set = 0;
-  out = 1.0;
-  
-  pid_t.SetMode(AUTOMATIC);
-  pid_s.SetMode(AUTOMATIC);
-
-  pid_s.SetSampleTime(100);
-
-  pid_t.SetOutputLimits(-255,255);
-  pid_s.SetOutputLimits(-76,76);
-  
-}
-
 void setup() {
   Serial.begin(115200);
   Serial.println("Setting up drive");
   driveSetup();
   Serial.println("Setting up buttons");
   buttonSetup();
-  Serial.println("Setting up MPU");
-  //TODO mpuSetup();
+  //Serial.println("Setting up MPU");
+  //mpuSetup();
   
-  //Delay 10 seconds for gyro to stabilize
+  //Delay for gyro to stabilize
+  int countdown = 7;
   
-  /*for(int i = 0; i<10; i++){
-    Serial.println("Robot will move in " + String(10-i) + " seconds");
+   for(int i = 0; i<countdown; i++){
+    Serial.println("Robot will move in " + String(countdown-i) + " seconds");
     delay(1000);
-  }*/
+  }
+  
 
   Serial.println("Starting!");
-  pidSetup(); //Must occur after gyro setup for setpoint initialization
-  Serial.println("PID Started");
 }
 
 //Uses code provided with the MPU6050 examples
@@ -276,93 +239,136 @@ void driveTank(int left, int right){
   analogWrite(R_Speed, right); 
 }
 
-void turn(bool isReversed){
-  //TODO!!! Wut
-  const double GOOD_DIF = 0.1;
+void driveDuration(int left, int right, double seconds){
+   driveTank(left, right);
+   
+   delay(seconds*1000);
+   
+   driveTank(0,0);
+}
+
+void turn(bool isReversed){ 
   
-  set = (45.0 * (isReversed? -255 : 255)) + readYaw();
-  in = readYaw();
+  /*const float GOOD_DIF = 1;
+  const float P = 1;
+  const float I = 0;
+
+  float angle = readYaw();
+  const float set = readYaw() + forward? 45:-45;
+
+  float errorSum;
+  float error;
+  float pError;
+  float iError;
+  float power;
+
+  do{
+    error = set-angle;
+    errorSum += error;
+    
+    pError = error * P;
+    iError = errorSum * I;
+
+    power = pError + iError;
+    driveTank(power, -power);
+
+    delay(100);
+
+    angle = readYaw();
+    
+  }while(error>GOOD_DIF);
+
+  driveTank(0,0);*/
+  int power = forward? 127:-127;
+  //driveDuration(power,-power,1);
   
-  while(abs(set-out)>GOOD_DIF){
-    //pid_t.Compute();
-    driveTank(out,-out);
-  }
 }
 
 void loop() {
-  if(!E_STOPPED){
-    //If any of the buttons are being triggered, turn away from that direction
-    //If ultrasound in the direction of movement is too close, turn around
-    //Then, just drive straight
-
-    //TODO- test and configure ultrasound, buttons, turning
-    
-    //Turn at side collision
-    if(digitalRead(pLeft)==LOW){ 
-      //turn(!forward);
-      Serial.println("LEFT COLLIDE");
-      isClear = false;
-    }
-    if(digitalRead(pRight)==LOW){
-      //turn(forward);
-      Serial.println("RIGHT COLLIDE");
-      isClear=false;
-    }
-    
-    //Change direction at front/back interaction
-    if(front_sonar.ping_cm()<MIN_DISTANCE
-       ||digitalRead(pFront)==LOW){
-      Serial.println("FRONT COLLIDE");
-      forward = false;
-    }
-    if(back_sonar.ping_cm()<MIN_DISTANCE
-       ||digitalRead(pBack)==LOW){
-      Serial.println("BACK COLIDE");
-      forward = true;
-    }
-    
-    
-
-    //Drive straight
-
-    //If we just started going straight, store the current angle as the target
-    /*
-    if(!isClear){
-      set = readYaw();
-      isClear = true;
-    }
-    */
-    
-    //Update the gyro reading
-    double angle = readYaw();
-    in = angle;
-    
-    velocity = forward? abs(velocity) : -abs(velocity);
-    pid_s.Compute();
-    int left = velocity + out;
-    int right = velocity - out;
-    
-    driveTank(left, right);    
-
-    //Update the serial with drive status every 2 seconds
-    int currentTime = millis();
-    if(currentTime - lastUpdate > 2000){
-      /*Serial.print("Driving with power ");
-      Serial.print("("+String(left)+", "+String(right)+")"); //=> "(%left, %right)"
-      Serial.println("With angle "+String(angle)+" and target "+String(angle));
-      Serial.println("Offset! " + String(out));*/
-    }
-   
-  }else{
-    Serial.println("EMERGENCY STOPPED: Restart Robot");
-  }
-
   
   if(digitalRead(kill_pin)==LOW){
     delay(kill_delay);
     if(digitalRead(kill_pin)==LOW){
       E_STOPPED = true;
+      Serial.println("EMERGENCY STOPPED: Restart Robot");
     }
   }
+  
+  if(!E_STOPPED){
+    //If any of the buttons are being triggered, turn away from that direction
+    //If ultrasound in the direction of movement is too close, turn around
+    //Then, just drive straight
+    
+    //Turn at side collision
+   /* if(digitalRead(pLeft)==LOW){ 
+      turn(!forward);
+      Serial.println("LEFT COLLIDE");
+    }
+    if(digitalRead(pRight)==LOW){
+      turn(forward);
+      Serial.println("RIGHT COLLIDE");
+    }*/
 
+    if(digitalRead(pRight)==LOW){
+        //Serial.println("RIGHT");
+        //turning = true;
+        //turnStart = millis();
+      }
+
+    if(digitalRead(pLeft)==LOW){
+      //Serial.println("LEFT");  
+      //turning = true;
+      //turnStart = millis();
+     }
+
+
+    double frontRead = front_sonar.ping_cm();
+    double backRead = back_sonar.ping_cm();
+
+    frontRead = (frontRead!=0)? frontRead:MAX_DISTANCE;
+    backRead = (backRead!=0)? backRead:MAX_DISTANCE;
+
+    //Change direction at front/back interaction
+    if(frontRead<MIN_DISTANCE
+       ||digitalRead(pFront)==LOW){
+      Serial.println("FRONT " + String(frontRead));
+      forward = false;
+    }
+    else if(backRead<MIN_DISTANCE
+       ||digitalRead(pBack)==LOW){
+      Serial.println("BACK  " + String(backRead));
+      forward = true;
+    }
+
+    //Drive 
+    
+    int left = forward? vLeft: -vLeft;
+    int right = forward? vRight: -vRight;
+
+    if(millis() - turnStart > 1000){
+      turning = false;
+    }
+
+    if(turning){
+      left *= -1;
+    }
+    
+    driveTank(left, right);
+
+    //Update the serial with drive status every 2 seconds
+    /*
+    int currentTime = millis();
+    if(currentTime - lastUpdate > 2000){
+      /*
+      Serial.print("Driving with power ");
+      Serial.print("("+String(left)+", "+String(right)+")"); //=> "(%left, %right)"
+      */
+      /*Serial.print("Angle: " + String(angle));
+      Serial.print(" Offset! " + String(offset));
+    }
+    */
+   
+  }else{
+    driveTank(0,0);
+  }
 }
